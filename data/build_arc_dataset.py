@@ -8,7 +8,10 @@ import numpy as np
 from argdantic import ArgParser
 from pydantic import BaseModel
 
-from data.common import PuzzleDatasetMetadata, dihedral_transform, inverse_dihedral_transform
+try:
+    from data.common import PuzzleDatasetMetadata, dihedral_transform, inverse_dihedral_transform
+except ModuleNotFoundError:
+    from common import PuzzleDatasetMetadata, dihedral_transform, inverse_dihedral_transform
 
 
 cli = ArgParser()

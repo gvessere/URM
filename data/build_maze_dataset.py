@@ -10,7 +10,10 @@ from pydantic import BaseModel
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 
-from data.common import PuzzleDatasetMetadata, dihedral_transform
+try:
+    from data.common import PuzzleDatasetMetadata, dihedral_transform
+except ModuleNotFoundError:
+    from common import PuzzleDatasetMetadata, dihedral_transform
 
 
 CHARSET = "# SGo"

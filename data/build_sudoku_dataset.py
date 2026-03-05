@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 
-from data.common import PuzzleDatasetMetadata
+try:
+    from data.common import PuzzleDatasetMetadata
+except ModuleNotFoundError:
+    from common import PuzzleDatasetMetadata
 
 
 cli = ArgParser()
