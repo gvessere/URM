@@ -2,7 +2,13 @@ run_name="URM-arcagi2"
 checkpoint_path="checkpoints/${run_name}" 
 mkdir -p $checkpoint_path
 
-torchrun --nproc-per-node 8 pretrain.py \
+if [ "$(uname -s)" = "Darwin" ]; then
+  NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+else
+  NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+fi
+
+torchrun --nproc-per-node "${NPROC_PER_NODE}" pretrain.py \
 data_path=data/arc2concept-aug-1000 \
 arch=urm arch.loops=16 arch.H_cycles=2 arch.L_cycles=6 arch.num_layers=4 \
 epochs=200000 \

@@ -1,0 +1,16 @@
+# Local CPU defaults (extends full pretrain config). Override on CLI as needed.
+
+defaults:
+  - cfg_pretrain
+  - _self_
+
+# README Sudoku layout; build with data/build_sudoku_dataset.py
+data_path: data/sudoku-extreme-1k-aug-1000
+
+# ARC evaluators are not applicable to Sudoku; skip unless you add a matching evaluator.
+evaluators: []
+
+global_batch_size: 32
+epochs: 100
+eval_interval: 10
+checkpoint_every_eval: false
