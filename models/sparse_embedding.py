@@ -14,18 +14,28 @@ class CastedSparseEmbedding(nn.Module):
         self.cast_to = cast_to
         self.num_embeddings = num_embeddings
 
-        # Real Weights
-        # Truncated LeCun normal init
-        self.weights = nn.Buffer(
-            trunc_normal_init_(torch.empty((num_embeddings, embedding_dim)), std=init_std), persistent=True
+        # Real weights (updated by CastedSparseEmbeddingSignSGD, not Adam)
+        self.register_buffer(
+            "weights",
+            trunc_normal_init_(torch.empty((num_embeddings, embedding_dim)), std=init_std),
+            persistent=True,
         )
 
-        # Local weights and IDs
-        # Local embeddings, with gradient, not persistent
-        self.local_weights = nn.Buffer(torch.zeros(batch_size, embedding_dim, requires_grad=True), persistent=False)
-        # Local embedding IDs, not persistent
-        # Keep in int64 because CUDA scatter/gather expects long indices
-        self.local_ids = nn.Buffer(torch.zeros(batch_size, dtype=torch.int64), persistent=False)
+        # Per-batch activations (grad); not a registered Parameter so omitted from state_dict / model.parameters().
+        lw = torch.zeros(batch_size, embedding_dim, requires_grad=True)
+        object.__setattr__(self, "local_weights", lw)
+
+        # Local embedding IDs (not checkpointed)
+        self.register_buffer("local_ids", torch.zeros(batch_size, dtype=torch.int64), persistent=False)
+
+    def sparse_optimizer_tensors(self):
+        """Tensors passed to CastedSparseEmbeddingSignSGD_Distributed (same semantics as former .buffers())."""
+        return [self.local_weights, self.local_ids, self.weights]
+
+    def _apply(self, fn, recurse=True):  # type: ignore[override]
+        lw = self.local_weights
+        object.__setattr__(self, "local_weights", fn(lw))
+        return super()._apply(fn, recurse)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if torch.any((inputs < 0) | (inputs >= self.num_embeddings)):

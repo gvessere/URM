@@ -119,7 +119,8 @@ class URM_Inner(nn.Module):
 
         self.layers = nn.ModuleList([URMBlock(self.config) for _ in range(self.config.num_layers)])
 
-        self.init_hidden = nn.Buffer(
+        self.register_buffer(
+            "init_hidden",
             trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1),
             persistent=True,
         )

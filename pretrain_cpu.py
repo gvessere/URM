@@ -128,7 +128,7 @@ def create_model(
 
         optimizers = [
             CastedSparseEmbeddingSignSGD_Distributed(
-                model.model.puzzle_emb.buffers(),  # type: ignore
+                model.model.puzzle_emb.sparse_optimizer_tensors(),  # type: ignore
                 lr=0,
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size,
@@ -154,14 +154,14 @@ def create_model(
     else:
         optimizers = [
             CastedSparseEmbeddingSignSGD_Distributed(
-                model.model.puzzle_emb.buffers(),  # type: ignore
+                model.model.puzzle_emb.sparse_optimizer_tensors(),  # type: ignore
                 lr=0,
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size,
             ),
             AdamATan2(
                 model.parameters(),
-                lr=0,
+                lr=config.lr,
                 weight_decay=config.weight_decay,
                 betas=(config.beta1, config.beta2),
             ),

@@ -113,8 +113,8 @@ class RotaryEmbedding(nn.Module):
 
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached = nn.Buffer(emb.cos(), persistent=False)
-        self.sin_cached = nn.Buffer(emb.sin(), persistent=False)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
     def forward(self):
         return self.cos_cached, self.sin_cached
@@ -187,7 +187,7 @@ class CayleyOrthogonalHyperConnection(nn.Module):
 
         self.norm = nn.LayerNorm(hidden_size)
         self.fused_proj = CastedLinear(hidden_size, 3 * num_streams * num_streams, bias=True)
-        self._I = nn.Buffer(torch.eye(num_streams, dtype=torch.float32), persistent=False)
+        self.register_buffer("_I", torch.eye(num_streams, dtype=torch.float32), persistent=False)
 
     def _iterative_cayley(self, raw: torch.Tensor) -> torch.Tensor:
         # raw: [B, L, n, n]

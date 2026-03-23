@@ -18,7 +18,7 @@ import wandb
 import coolname
 import hydra
 import pydantic
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 try:
     from adam_atan2 import AdamATan2
 except ImportError:
@@ -227,7 +227,7 @@ def create_model(
 
         optimizers = [
             CastedSparseEmbeddingSignSGD_Distributed(
-                model.model.puzzle_emb.buffers(),  # type: ignore
+                model.model.puzzle_emb.sparse_optimizer_tensors(),  # type: ignore
                 lr=0,  # Needs to be set by scheduler
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size,
@@ -251,14 +251,14 @@ def create_model(
     else:
         optimizers = [
             CastedSparseEmbeddingSignSGD_Distributed(
-                model.model.puzzle_emb.buffers(),  # type: ignore
+                model.model.puzzle_emb.sparse_optimizer_tensors(),  # type: ignore
                 lr=0,  # Needs to be set by scheduler
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size,
             ),
             AdamATan2(
                 model.parameters(),
-                lr=0,  # Needs to be set by scheduler
+                lr=config.lr,
                 weight_decay=config.weight_decay,
                 betas=(config.beta1, config.beta2),
             ),
@@ -800,6 +800,21 @@ def evaluate(
     return reduced_metrics
 
 
+def _config_to_serializable(obj: Any) -> Any:
+    """Strip OmegaConf containers so YAML/JSON export works (Hydra leaves ListConfig in pydantic extras)."""
+    if isinstance(obj, DictConfig):
+        return {k: _config_to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, ListConfig):
+        return [_config_to_serializable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _config_to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_config_to_serializable(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_config_to_serializable(v) for v in obj)
+    return obj
+
+
 def save_code_and_config(config: PretrainConfig, save_dir: str):
     import os, json
     import yaml
@@ -807,7 +822,7 @@ def save_code_and_config(config: PretrainConfig, save_dir: str):
     cfg_path = os.path.join(save_dir, "config.yaml")
     json_path = os.path.join(save_dir, "config.json")
 
-    config_dict = json.loads(config.model_dump_json())
+    config_dict = _config_to_serializable(config.model_dump())
 
     try:
         with open(cfg_path, "w", encoding="utf-8") as f:
