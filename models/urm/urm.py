@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from pydantic import BaseModel
 from models.common import trunc_normal_init_
-from models.layers import rms_norm, ConvSwiGLU, Attention, RotaryEmbedding, CosSin, CastedEmbedding, CastedLinear
+from models.layers import rms_norm, ConvSwiGLU, Attention, RotaryEmbedding, CosSin, CastedEmbedding, CastedLinear, CayleyOrthogonalHyperConnection
 from models.sparse_embedding import CastedSparseEmbedding
 
 
@@ -37,6 +37,10 @@ class URMConfig(BaseModel):
     L_cycles: int
     H_cycles: int
     forward_dtype: str = "bfloat16"
+    jpmhc_num_streams: int = 4
+    jpmhc_tau: float = 1.0
+    jpmhc_cayley_alpha: float = 0.1
+    jpmhc_cayley_iters: int = 2
 
 
 class URMBlock(nn.Module):
@@ -54,12 +58,29 @@ class URMBlock(nn.Module):
             expansion=config.expansion,
         )
         self.norm_eps = config.rms_norm_eps
+        self.hc_attn = CayleyOrthogonalHyperConnection(
+            hidden_size=config.hidden_size,
+            num_streams=config.jpmhc_num_streams,
+            tau=config.jpmhc_tau,
+            cayley_alpha=config.jpmhc_cayley_alpha,
+            cayley_iters=config.jpmhc_cayley_iters,
+        )
+        self.hc_mlp = CayleyOrthogonalHyperConnection(
+            hidden_size=config.hidden_size,
+            num_streams=config.jpmhc_num_streams,
+            tau=config.jpmhc_tau,
+            cayley_alpha=config.jpmhc_cayley_alpha,
+            cayley_iters=config.jpmhc_cayley_iters,
+        )
 
     def forward(self, cos_sin: CosSin, hidden_states: torch.Tensor) -> torch.Tensor:
-        attn_output = self.self_attn(cos_sin=cos_sin, hidden_states=hidden_states)
-        hidden_states = rms_norm(hidden_states + attn_output, variance_epsilon=self.norm_eps)
-        mlp_output = self.mlp(hidden_states)
-        hidden_states = rms_norm(hidden_states + mlp_output, variance_epsilon=self.norm_eps)
+        hidden_states = self.hc_attn(
+            hidden_states,
+            sublayer_fn=lambda hs: self.self_attn(cos_sin=cos_sin, hidden_states=hs),
+        )
+        hidden_states = rms_norm(hidden_states, variance_epsilon=self.norm_eps)
+        hidden_states = self.hc_mlp(hidden_states, sublayer_fn=self.mlp)
+        hidden_states = rms_norm(hidden_states, variance_epsilon=self.norm_eps)
         return hidden_states
 
 

@@ -8,7 +8,7 @@ from torch import nn
 from pydantic import BaseModel
 import random
 from models.common import trunc_normal_init_
-from models.layers import rms_norm, LinearSwish, SwiGLU, Attention, RotaryEmbedding, CosSin, CastedEmbedding, CastedLinear
+from models.layers import rms_norm, LinearSwish, SwiGLU, Attention, RotaryEmbedding, CosSin, CastedEmbedding, CastedLinear, CayleyOrthogonalHyperConnection
 from models.sparse_embedding import CastedSparseEmbedding
 
 IGNORE_LABEL_ID = -100
@@ -61,6 +61,10 @@ class TRMConfig(BaseModel):
     mlp_t: bool = False # use mlp on L instead of transformer
     puzzle_emb_len: int = 16 # if non-zero, its specified to this value
     no_ACT_continue: bool =  True # No continue ACT loss, only use the sigmoid of the halt which makes much more sense
+    jpmhc_num_streams: int = 4
+    jpmhc_tau: float = 1.0
+    jpmhc_cayley_alpha: float = 0.1
+    jpmhc_cayley_iters: int = 2
 
 class TRMBlock(nn.Module):
     def __init__(self, config: TRMConfig) -> None:
@@ -86,22 +90,41 @@ class TRMBlock(nn.Module):
             expansion=config.expansion,
         )
         self.norm_eps = config.rms_norm_eps
+        self.hc_attn = CayleyOrthogonalHyperConnection(
+            hidden_size=config.hidden_size,
+            num_streams=config.jpmhc_num_streams,
+            tau=config.jpmhc_tau,
+            cayley_alpha=config.jpmhc_cayley_alpha,
+            cayley_iters=config.jpmhc_cayley_iters,
+        )
+        self.hc_mlp = CayleyOrthogonalHyperConnection(
+            hidden_size=config.hidden_size,
+            num_streams=config.jpmhc_num_streams,
+            tau=config.jpmhc_tau,
+            cayley_alpha=config.jpmhc_cayley_alpha,
+            cayley_iters=config.jpmhc_cayley_iters,
+        )
 
         
     def forward(self, cos_sin: CosSin, hidden_states: torch.Tensor, compute_target_q=False) -> torch.Tensor:
         # B, L, D = hidden_states.shape
         # Post Norm
         if self.config.mlp_t:
-            hidden_states = hidden_states.transpose(1,2)
-            out = self.mlp_t(hidden_states)
-            hidden_states = rms_norm(hidden_states + out, variance_epsilon=self.norm_eps)
-            hidden_states = hidden_states.transpose(1,2)
+            hidden_states = self.hc_attn(
+                hidden_states,
+                sublayer_fn=lambda hs: self.mlp_t(hs.transpose(1, 2)).transpose(1, 2),
+            )
+            hidden_states = rms_norm(hidden_states, variance_epsilon=self.norm_eps)
         else:
             # Self Attention
-            hidden_states = rms_norm(hidden_states + self.self_attn(cos_sin=cos_sin, hidden_states=hidden_states), variance_epsilon=self.norm_eps)
+            hidden_states = self.hc_attn(
+                hidden_states,
+                sublayer_fn=lambda hs: self.self_attn(cos_sin=cos_sin, hidden_states=hs),
+            )
+            hidden_states = rms_norm(hidden_states, variance_epsilon=self.norm_eps)
         # Fully Connected
-        out = self.mlp(hidden_states)
-        hidden_states = rms_norm(hidden_states + out, variance_epsilon=self.norm_eps)
+        hidden_states = self.hc_mlp(hidden_states, sublayer_fn=self.mlp)
+        hidden_states = rms_norm(hidden_states, variance_epsilon=self.norm_eps)
         return hidden_states
 
 class TRMReasoningModule(nn.Module):

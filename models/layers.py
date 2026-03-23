@@ -1,4 +1,4 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable
 from contextlib import nullcontext
 
 import torch
@@ -8,12 +8,36 @@ from torch.nn.functional import scaled_dot_product_attention
 import einops
 import math
 
+_flash_attn_func = None
 try:
-    from flash_attn_interface import flash_attn_func
+    from flash_attn_interface import flash_attn_func as _flash_attn_func  # type: ignore
 except ImportError:
-    from flash_attn import flash_attn_func
+    try:
+        from flash_attn import flash_attn_func as _flash_attn_func  # type: ignore
+    except ImportError:
+        pass
 
 from models.common import trunc_normal_init_
+
+
+def _sdpa_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    num_heads: int,
+    num_key_value_heads: int,
+    causal: bool,
+) -> torch.Tensor:
+    """Flash-attention compatible layout in/out: [batch, seq, heads, head_dim]."""
+    if num_heads != num_key_value_heads:
+        n_rep = num_heads // num_key_value_heads
+        key = key.repeat_interleave(n_rep, dim=2)
+        value = value.repeat_interleave(n_rep, dim=2)
+    q = query.transpose(1, 2)
+    k = key.transpose(1, 2)
+    v = value.transpose(1, 2)
+    out = scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=causal)
+    return out.transpose(1, 2)
 
 
 CosSin = Tuple[torch.Tensor, torch.Tensor]
@@ -126,14 +150,79 @@ class Attention(nn.Module):
             cos, sin = cos_sin
             query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
-        # flash attn
-        attn_output = flash_attn_func(q=query, k=key, v=value, causal=self.causal)
-        if isinstance(attn_output, tuple):  # fa2 and fa3 compatibility
-            attn_output = attn_output[0]
+        use_flash = _flash_attn_func is not None and query.is_cuda
+        if use_flash:
+            attn_output = _flash_attn_func(q=query, k=key, v=value, causal=self.causal)
+            if isinstance(attn_output, tuple):
+                attn_output = attn_output[0]
+        else:
+            attn_output = _sdpa_attention(
+                query,
+                key,
+                value,
+                self.num_heads,
+                self.num_key_value_heads,
+                self.causal,
+            )
 
-        # attn_output: [batch_size, num_heads, seq_len, head_dim]
-        attn_output = attn_output.view(batch_size, seq_len, self.output_size)  # type: ignore
+        # attn_output: [batch_size, seq_len, num_heads, head_dim]
+        attn_output = attn_output.reshape(batch_size, seq_len, self.output_size)
         return self.o_proj(attn_output)
+
+
+class CayleyOrthogonalHyperConnection(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_streams: int = 4,
+        tau: float = 1.0,
+        cayley_alpha: float = 0.1,
+        cayley_iters: int = 2,
+    ):
+        super().__init__()
+        self.num_streams = num_streams
+        self.tau = tau
+        self.cayley_alpha = cayley_alpha
+        self.cayley_iters = cayley_iters
+
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fused_proj = CastedLinear(hidden_size, 3 * num_streams * num_streams, bias=True)
+        self._I = nn.Buffer(torch.eye(num_streams, dtype=torch.float32), persistent=False)
+
+    def _iterative_cayley(self, raw: torch.Tensor) -> torch.Tensor:
+        # raw: [B, L, n, n]
+        w = raw - raw.transpose(-1, -2)
+        eye = self._I.to(dtype=w.dtype, device=w.device).view(1, 1, self.num_streams, self.num_streams)
+        y = eye + self.cayley_alpha * w
+        for _ in range(self.cayley_iters):
+            y = eye + 0.5 * self.cayley_alpha * torch.matmul(w, eye + y)
+        return y
+
+    def forward(self, x: torch.Tensor, sublayer_fn: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+        # x: [B, L, D]
+        gates = self.fused_proj(self.norm(x))
+        pre_raw, post_raw, res_raw = gates.chunk(3, dim=-1)
+        n = self.num_streams
+
+        pre_raw = pre_raw.view(*x.shape[:2], n, n).to(torch.float32)
+        post_raw = post_raw.view(*x.shape[:2], n, n).to(torch.float32)
+        res_raw = res_raw.view(*x.shape[:2], n, n).to(torch.float32)
+
+        h_pre = torch.softmax(pre_raw / self.tau, dim=-1)
+        h_post = torch.softmax(post_raw / self.tau, dim=-2)
+        h_res = self._iterative_cayley(res_raw)
+
+        # Virtual n-stream representation; keeps the external interface [B, L, D].
+        x_streams = x.unsqueeze(-2).expand(-1, -1, n, -1)
+        x_pre = torch.einsum("blij,bljd->blid", h_pre, x_streams)
+        x_in = x_pre.mean(dim=-2).to(x.dtype)
+
+        y = sublayer_fn(x_in)
+        y_streams = y.unsqueeze(-2).expand(-1, -1, n, -1)
+
+        x_res = torch.einsum("blij,bljd->blid", h_res.to(x.dtype), x_streams)
+        y_post = torch.einsum("blij,bljd->blid", h_post.to(x.dtype), y_streams)
+        return (x_res + y_post).mean(dim=-2)
 
 
 class SwiGLU(nn.Module):
