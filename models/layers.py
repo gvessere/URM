@@ -268,13 +268,17 @@ class ConvSwiGLU(nn.Module):
     def forward(self, x: torch.Tensor, timer: Optional[object] = None, prefix: str = ""):
         gate, up = self.gate_up_proj(x).chunk(2, dim=-1)
         x_ffn = self.act(gate) * up
-        x_conv = self.dwconv(x_ffn.transpose(1, 2).to(self.dwconv.weight.dtype))
+        x_conv = F.conv1d(
+            x_ffn.transpose(1, 2),
+            self.dwconv.weight.to(x_ffn.dtype),
+            self.dwconv.bias.to(x_ffn.dtype) if self.dwconv.bias is not None else None,
+            padding=self.dwconv.padding[0],
+            groups=self.dwconv.groups,
+        )
         x_conv = x_conv[..., :up.size(1)]
         x_conv = self.act(x_conv)
         x_conv = x_conv.transpose(1, 2).contiguous()
-        x_out = self.down_proj(x_conv)
-
-        return x_out
+        return self.down_proj(x_conv)
 
 
 class FullyLinearGLU(nn.Module):
