@@ -214,8 +214,9 @@ class CayleyOrthogonalHyperConnection(nn.Module):
 
         # Virtual n-stream representation; keeps the external interface [B, L, D].
         x_streams = x.unsqueeze(-2).expand(-1, -1, n, -1)
-        x_pre = torch.einsum("blij,bljd->blid", h_pre, x_streams)
-        x_in = x_pre.mean(dim=-2).to(x.dtype)
+        # Match activation dtype (e.g. bfloat16); gate softmax stays in float32 above for stability.
+        x_pre = torch.einsum("blij,bljd->blid", h_pre.to(x.dtype), x_streams)
+        x_in = x_pre.mean(dim=-2)
 
         y = sublayer_fn(x_in)
         y_streams = y.unsqueeze(-2).expand(-1, -1, n, -1)
