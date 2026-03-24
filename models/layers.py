@@ -200,7 +200,7 @@ class CayleyOrthogonalHyperConnection(nn.Module):
 
     def forward(self, x: torch.Tensor, sublayer_fn: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
         # x: [B, L, D]
-        gates = self.fused_proj(self.norm(x))
+        gates = self.fused_proj(self.norm(x.float()).to(x.dtype))
         pre_raw, post_raw, res_raw = gates.chunk(3, dim=-1)
         n = self.num_streams
 
@@ -260,7 +260,7 @@ class ConvSwiGLU(nn.Module):
             padding=conv_kernel // 2,
             groups=inter,
             bias=True,
-        ).to(dtype=torch.bfloat16)
+        )
 
         self.act = nn.SiLU()
         self.down_proj = CastedLinear(inter, hidden_size, bias=False)
@@ -268,7 +268,7 @@ class ConvSwiGLU(nn.Module):
     def forward(self, x: torch.Tensor, timer: Optional[object] = None, prefix: str = ""):
         gate, up = self.gate_up_proj(x).chunk(2, dim=-1)
         x_ffn = self.act(gate) * up
-        x_conv = self.dwconv(x_ffn.transpose(1, 2).to(self.dwconv.weight.dtype))
+        x_conv = self.dwconv(x_ffn.transpose(1, 2).to(x_ffn.dtype))
         x_conv = x_conv[..., :up.size(1)]
         x_conv = self.act(x_conv)
         x_conv = x_conv.transpose(1, 2).contiguous()
